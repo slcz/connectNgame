@@ -1,0 +1,217 @@
+---
+jupyter:
+  jupytext:
+    text_representation:
+      extension: .Rmd
+      format_name: rmarkdown
+      format_version: '1.2'
+      jupytext_version: 1.3.0
+  kernelspec:
+    display_name: Python 3
+    language: python
+    name: python3
+---
+
+```{python}
+from math import pi
+from ipycanvas import Canvas
+from ipywidgets import widgets
+from IPython.display import display, HTML
+from enum import Enum
+import numpy as np
+```
+
+```{python}
+class PieceColor(Enum):
+    empty = 0
+    black = -1
+    white = +1
+```
+
+```{python}
+class DrawBoard:
+    def __init__(
+        self,
+        canvas,
+        width,
+        height,
+        offsetx = 2,
+        offsety = 2,
+        unit = 20
+    ):
+        self.fonts = [
+            (36, "36px serif"),
+            (24, "24px serif"),
+            (16, "16px serif"),
+            (12, "12px serif"),
+            (8,  "8px serif"),
+            (0,  "")
+        ]
+        self.canvas = canvas
+        self.unit = unit
+        self.offsetx = offsetx
+        self.offsety = offsety
+        self.width = width
+        self.height = height
+
+    def draw(self):
+        self.canvas.stroke_style = "black"
+        self.canvas.begin_path()
+        for x in range(self.offsetx, self.offsetx + self.width):
+            self.canvas.move_to(x * self.unit, self.offsety * self.unit)
+            self.canvas.line_to(x * self.unit, (self.offsety + self.height - 1) * self.unit)
+        for y in range(self.offsety, self.offsety + self.height):
+            self.canvas.move_to(self.offsetx * self.unit, y * self.unit)
+            self.canvas.line_to((self.offsetx + self.width - 1) * self.unit, y * self.unit)
+        self.canvas.stroke()
+        
+    def clear_piece(self, x, y):
+        px, py = (x + self.offsetx) * self.unit, (y + self.offsety) * self.unit
+        self.canvas.clear_rect(
+            px - (self.unit + 1) // 2,
+            py - (self.unit + 1) // 2,
+            (self.unit + 1) // 2 * 2,
+            (self.unit + 1) // 2 * 2
+        )
+        
+    def piece(self, x, y, color, nmove = None):
+        self.canvas.stroke_style = "black"
+        self.canvas.fill_style = "black" if color == PieceColor.black else "white"
+        px, py = (x + self.offsetx) * self.unit, (y + self.offsety) * self.unit
+        radius = self.unit // 2 - 1
+        self.canvas.stroke_arc(px, py, radius, 0, 2 * pi)
+        self.canvas.fill_arc(px, py, radius, 0, 2 * pi)
+        font_offset = 0
+        if nmove != None:
+            label = str(nmove)
+            for threshold, font in self.fonts:
+                if self.unit > len(label) * threshold:
+                    self.canvas.font = font
+                    font_offset = threshold
+                    break
+            self.canvas.fill_style = "white" if color == PieceColor.black else "black"
+            self.canvas.fill_text(
+                label,
+                px - int(font_offset / 2 * len(label) / 2),
+                py + font_offset // 3,
+                self.unit
+            )
+
+    def line(self, connected_pieces, color):
+        self.canvas.fill_style = "black" if color == PieceColor.white else "white"
+        for x, y in connected_pieces:
+            px, py = (x + self.offsetx) * self.unit, (y + self.offsety) * self.unit
+            self.canvas.fill_rect(
+                px - self.unit // 6,
+                py - self.unit // 6,
+                self.unit // 3,
+                self.unit // 3
+            )
+
+    def where(self, x, y):
+        x = x - self.offsetx * self.unit
+        y = y - self.offsety * self.unit
+        x = int((x + self.unit // 2) // self.unit)
+        y = int((y + self.unit // 2) // self.unit)
+        if x < 0 or x >= self.width:
+            return None
+        if y < 0 or y >= self.height:
+            return None
+        return x, y
+
+```
+
+```{python}
+out = widgets.Output()
+class Game:
+    def __init__(
+        self,
+        width,
+        height,
+        win,
+        move,
+        imove,
+        size = (500, 500),
+    ):
+        if size:
+            self.canvas = Canvas(size = size)
+        else:
+            self.canvas = None
+        self.width, self.height = width, height
+        self.win = win
+        self.move = move
+        self.imove = imove
+        self.nmoves = -self.imove
+        self.finish = PieceColor.empty
+        self.matrix = np.zeros((width + 2, height + 2), dtype=np.int)
+        self.neighbors = [(1, 1), (1, -1), (1, 0), (0, 1)]
+        assert(self.width >= self.win and self.height >= self.win)
+        if self.canvas:
+            unit = width if width < height else height
+            canvas_size = size[0] if size[0] < size[1] else size[1]
+            unit = canvas_size // (unit + 4)
+            self.board = DrawBoard(
+                self.canvas,
+                self.width,
+                self.height,
+                2,
+                2,
+                unit
+            )
+            self.board.draw()
+            for x in range(self.imove):
+                self.board.piece(x, -1, PieceColor.black)
+            self.canvas.on_mouse_down(lambda x, y: self.do_move(x, y))
+
+    def check_connection(self, x, y, color):
+        for direction, (dx, dy) in enumerate(self.neighbors):
+            connected_pieces = [(x, y)]
+            for s in -1, 1:
+                for i in range(1, self.win):
+                    nx, ny = x + dx * i * s, y + dy * i * s
+                    if self.matrix[nx, ny] == color:
+                        connected_pieces.append((nx, ny))
+                    else:
+                        break
+            if len(connected_pieces) >= self.win:
+                return connected_pieces
+        return []
+
+    @out.capture()
+    def do_move(self, x, y):
+        if self.finish != PieceColor.empty:
+            return
+        position = self.board.where(x, y)
+        if position == None:
+            return
+        px, py = position
+        mx, my = px + 1, py + 1
+        if np.sum(self.matrix[mx, my]) != PieceColor.empty.value:
+            return
+        nmoves = self.nmoves // self.move if self.nmoves >= 0 else -1
+        color = PieceColor.white if nmoves % 2 == 0 else PieceColor.black
+        self.matrix[mx, my] = color.value
+        self.nmoves += 1
+        if self.canvas:
+            self.board.piece(px, py, color, self.nmoves + self.imove)
+            nmoves = self.nmoves // self.move if self.nmoves >= 0 else -1
+            color_next = PieceColor.white if nmoves % 2 == 0 else PieceColor.black
+            pieces = -self.nmoves if self.nmoves < 0 else self.move - self.nmoves % self.move
+            for i in range(self.imove if self.imove > self.move else self.move):
+                if i >= pieces:
+                    self.board.clear_piece(i, -1)
+                else:
+                    self.board.piece(i, -1, color_next)
+        connected_pieces = self.check_connection(mx, my, color.value)
+        if connected_pieces:
+            connected_pieces = [(x[0] - 1, x[1] - 1) for x in connected_pieces]
+            self.finish = color
+            if self.canvas:
+                self.board.line(connected_pieces, color)
+display(out)
+```
+
+```{python}
+game = Game(19, 19, 6, 3, 5, (600, 600))
+game.canvas
+```
